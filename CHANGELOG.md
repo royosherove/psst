@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] — pluggable storage backends
+## [0.7.0] — pluggable storage backends
 
 ### Added
 - **AWS Secrets Manager backend.** New `psst init --backend aws [--aws-region ...] [--aws-prefix ...] [--aws-profile ...]` creates a vault whose secrets live in AWS Secrets Manager instead of a local SQLite database. All commands (`set`, `get`, `list`, `rm`, `tag`, `untag`, `history`, `rollback`, `run`, `exec`, `export`, `scan`) work transparently with either backend.

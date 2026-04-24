@@ -384,6 +384,8 @@ export class AwsBackend implements VaultBackend {
     const CHECK_CHUNK = 20;
     const managedNames: string[] = [];
     for (let i = 0; i < names.length; i += CHECK_CHUNK) {
+      // Small delay between chunks to avoid AWS throttling on large vaults.
+      if (i > 0) await new Promise((r) => setTimeout(r, 200));
       const chunk = names.slice(i, i + CHECK_CHUNK);
       const checks = await Promise.all(
         chunk.map(async (name) => ({

@@ -10,8 +10,7 @@ export async function history(
   const vault = await getUnlockedVault(options);
 
   // Check secret exists
-  const secrets = await vault.listSecrets();
-  const exists = secrets.some((s) => s.name === name);
+  const exists = await vault.exists(name);
 
   if (!exists) {
     vault.close();
