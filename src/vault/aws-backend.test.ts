@@ -491,6 +491,43 @@ describe("AwsBackend", () => {
       // Still exists in the store
       expect(store.secrets.has("psst/EXTERNAL")).toBe(true);
     });
+
+    it("getSecret returns null for unmanaged secret", async () => {
+      const b = new AwsBackend({ region: "us-east-1" });
+      store.secrets.set("psst/FOREIGN", {
+        Name: "psst/FOREIGN",
+        Tags: [],
+        Versions: [
+          {
+            VersionId: "vid-f2",
+            CreatedDate: new Date(),
+            SecretString: '{"value":"secret-data","tags":[]}',
+            VersionStages: ["AWSCURRENT"],
+          },
+        ],
+      });
+      expect(await b.getSecret("FOREIGN")).toBeNull();
+    });
+
+    it("getSecrets excludes unmanaged secrets", async () => {
+      const b = new AwsBackend({ region: "us-east-1" });
+      await b.setSecret("MANAGED", "ok");
+      store.secrets.set("psst/FOREIGN", {
+        Name: "psst/FOREIGN",
+        Tags: [],
+        Versions: [
+          {
+            VersionId: "vid-f3",
+            CreatedDate: new Date(),
+            SecretString: '{"value":"nope","tags":[]}',
+            VersionStages: ["AWSCURRENT"],
+          },
+        ],
+      });
+      const map = await b.getSecrets(["MANAGED", "FOREIGN"]);
+      expect(map.has("MANAGED")).toBe(true);
+      expect(map.has("FOREIGN")).toBe(false);
+    });
   });
 
   describe("history and rollback", () => {

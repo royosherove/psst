@@ -347,6 +347,17 @@ export class AwsBackend implements VaultBackend {
   }
 
   async getSecret(name: string): Promise<string | null> {
+    const awsName = this.toAwsName(name);
+
+    // Only return secrets that psst manages, consistent with exists().
+    const managed = await this.isManagedSecret(awsName);
+    if (managed !== true) return null;
+
+    return this.getSecretValue(name);
+  }
+
+  /** Internal: fetch a secret value without the managed-tag check. */
+  private async getSecretValue(name: string): Promise<string | null> {
     const { sdk, client } = await this.getClient();
     const awsName = this.toAwsName(name);
 
@@ -366,8 +377,22 @@ export class AwsBackend implements VaultBackend {
     const result = new Map<string, string>();
     if (names.length === 0) return result;
 
+    // Check managed status per name in parallel. Each isManagedSecret is a
+    // single DescribeSecret call — O(N) total, not O(vault_size) like
+    // listing all secrets would be.
+    const checks = await Promise.all(
+      names.map(async (name) => ({
+        name,
+        managed: await this.isManagedSecret(this.toAwsName(name)),
+      })),
+    );
+    const managedNames = checks
+      .filter((c) => c.managed === true)
+      .map((c) => c.name);
+    if (managedNames.length === 0) return result;
+
     const { sdk, client } = await this.getClient();
-    const awsNames = names.map((n) => this.toAwsName(n));
+    const awsNames = managedNames.map((n) => this.toAwsName(n));
 
     // BatchGetSecretValue accepts up to 20 SecretIds per call. Chunk the
     // input so 'psst run' / 'psst exec' over large vaults stays fast.
@@ -394,8 +419,10 @@ export class AwsBackend implements VaultBackend {
           isAwsErrorNamed(err, "UnknownCommandException") ||
           isAwsErrorNamed(err, "ValidationException")
         ) {
-          for (const logical of names.slice(i, i + CHUNK)) {
-            const v = await this.getSecret(logical);
+          for (const logical of managedNames.slice(i, i + CHUNK)) {
+            // Already verified managed above — skip the redundant
+            // DescribeSecret check that getSecret() would do.
+            const v = await this.getSecretValue(logical);
             if (v !== null) result.set(logical, v);
           }
           continue;
