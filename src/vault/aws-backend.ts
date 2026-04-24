@@ -400,6 +400,10 @@ export class AwsBackend implements VaultBackend {
     if (managedNames.length === 0) return result;
 
     const { sdk, client } = await this.getClient();
+
+    // awsNames is a 1:1 positional mapping of managedNames — same length,
+    // same order, just with the AWS prefix applied. Both are sliced with
+    // the same `i` index in the loop below, so keep them in sync.
     const awsNames = managedNames.map((n) => this.toAwsName(n));
 
     // BatchGetSecretValue accepts up to 20 SecretIds per call. Chunk the
@@ -666,24 +670,31 @@ export class AwsBackend implements VaultBackend {
     // rows carry their own archived tags column). This is O(history),
     // but history lists are capped at 100 AWS versions per secret and
     // history is called rarely (interactive 'psst history <name>').
-    // Fetches run in parallel.
-    const envelopes = await Promise.all(
-      nonCurrent.map(async (v) => {
-        if (!v.VersionId) return { tags: [] as string[] };
-        try {
-          const resp: GetSecretValueCommandOutput = await client.send(
-            new sdk.GetSecretValueCommand({
-              SecretId: awsName,
-              VersionId: v.VersionId,
-            }),
-          );
-          if (!resp.SecretString) return { tags: [] as string[] };
-          return { tags: this.decodeEnvelope(resp.SecretString).tags };
-        } catch {
-          return { tags: [] as string[] };
-        }
-      }),
-    );
+    // Chunk at 20 concurrent fetches to avoid AWS ThrottlingException.
+    const envelopes: Array<{ tags: string[] }> = [];
+    const HISTORY_CHUNK = 20;
+    for (let i = 0; i < nonCurrent.length; i += HISTORY_CHUNK) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 200));
+      const chunk = nonCurrent.slice(i, i + HISTORY_CHUNK);
+      const batch = await Promise.all(
+        chunk.map(async (v) => {
+          if (!v.VersionId) return { tags: [] as string[] };
+          try {
+            const resp: GetSecretValueCommandOutput = await client.send(
+              new sdk.GetSecretValueCommand({
+                SecretId: awsName,
+                VersionId: v.VersionId,
+              }),
+            );
+            if (!resp.SecretString) return { tags: [] as string[] };
+            return { tags: this.decodeEnvelope(resp.SecretString).tags };
+          } catch {
+            return { tags: [] as string[] };
+          }
+        }),
+      );
+      envelopes.push(...batch);
+    }
 
     // Assign monotonic version numbers (oldest = 1), then return in
     // newest-first order to match SqliteBackend.getHistory().
@@ -803,7 +814,15 @@ export class AwsBackend implements VaultBackend {
     }
 
     // Restore both value and tags from the historical version.
-    await this.setSecret(name, envelope.value, envelope.tags);
+    // Wrap in try/catch so that a concurrent ownership change (e.g.,
+    // someone removing the psst:managed tag via the AWS console mid-
+    // rollback) returns false instead of throwing, matching the boolean
+    // contract callers expect.
+    try {
+      await this.setSecret(name, envelope.value, envelope.tags);
+    } catch {
+      return false;
+    }
     return true;
   }
 
