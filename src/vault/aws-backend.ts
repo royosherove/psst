@@ -377,18 +377,24 @@ export class AwsBackend implements VaultBackend {
     const result = new Map<string, string>();
     if (names.length === 0) return result;
 
-    // Check managed status per name in parallel. Each isManagedSecret is a
-    // single DescribeSecret call — O(N) total, not O(vault_size) like
-    // listing all secrets would be.
-    const checks = await Promise.all(
-      names.map(async (name) => ({
-        name,
-        managed: await this.isManagedSecret(this.toAwsName(name)),
-      })),
-    );
-    const managedNames = checks
-      .filter((c) => c.managed === true)
-      .map((c) => c.name);
+    // Check managed status per name in chunks of 20 (matching the
+    // BatchGetSecretValue chunk size). Each isManagedSecret is a single
+    // DescribeSecret call. Chunking avoids unbounded fan-out that could
+    // trigger AWS ThrottlingException on large batches.
+    const CHECK_CHUNK = 20;
+    const managedNames: string[] = [];
+    for (let i = 0; i < names.length; i += CHECK_CHUNK) {
+      const chunk = names.slice(i, i + CHECK_CHUNK);
+      const checks = await Promise.all(
+        chunk.map(async (name) => ({
+          name,
+          managed: await this.isManagedSecret(this.toAwsName(name)),
+        })),
+      );
+      for (const c of checks) {
+        if (c.managed === true) managedNames.push(c.name);
+      }
+    }
     if (managedNames.length === 0) return result;
 
     const { sdk, client } = await this.getClient();
